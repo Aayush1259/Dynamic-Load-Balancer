@@ -4,8 +4,6 @@ Algorithm Comparison: Least Connections vs Round Robin
 This script demonstrates why Least Connections is superior to Round Robin
 for workloads with variable request processing times.
 
-Author: Aayush Modi
-Course: TCSS 558 - Applied Distributed Computing
 """
 
 import asyncio
