@@ -1,0 +1,29 @@
+# Load Balancer Configuration
+# Professional configuration for distributed load balancing system
+
+servers:
+  - url: http://127.0.0.1:5001
+    name: worker-1
+    weight: 1
+  
+  - url: http://127.0.0.1:5002
+    name: worker-2
+    weight: 1
+  
+  - url: http://127.0.0.1:5003
+    name: worker-3
+    weight: 1
+  
+  # To demonstrate horizontal scalability, uncomment below:
+  # - url: http://127.0.0.1:5004
+  #   name: worker-4
+  #   weight: 1
+
+health_check:
+  interval_seconds: 5    # How often to check node health
+  timeout_seconds: 2     # Max wait time before marking as unhealthy
+
+load_balancer:
+  port: 8000
+  algorithm: least_connections
+  log_level: INFO
