@@ -4,8 +4,6 @@ Automated Fault Injection Testing for Load Balancer
 This script automatically tests the fault tolerance of the distributed
 load balancer by simulating node failures and verifying zero-downtime recovery.
 
-Author: Aayush Modi
-Course: TCSS 558 - Applied Distributed Computing
 """
 
 import subprocess
