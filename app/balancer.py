@@ -1,6 +1,5 @@
 """
 Dynamic Distributed Load Balancer with Health Monitoring
-Author: Aayush Modi | Course: TCSS 558 - Applied Distributed Computing
 
 Features:
 - Least Connections algorithm for intelligent load distribution
