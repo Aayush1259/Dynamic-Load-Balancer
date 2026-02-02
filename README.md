@@ -239,15 +239,3 @@ pyyaml==6.0.1
 ## License
 
 MIT License - feel free to use for learning and projects.
-
-## Author
-
-Aayush Modi  
-TCSS 558 - Applied Distributed Computing  
-University of Washington Tacoma
-
-## Acknowledgments
-
-- Course concepts from TCSS 558 Topic 1.2 (Container Network Parallelization)
-- Algorithm inspired by AWS Elastic Load Balancing
-- Health monitoring patterns from production distributed systems
