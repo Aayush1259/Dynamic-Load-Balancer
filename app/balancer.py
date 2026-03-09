@@ -6,22 +6,84 @@ Features:
 - Automated health monitoring with pull-based heartbeats
 - Real-time metrics tracking and visualization
 - Professional web dashboard for system monitoring
+- Thread-safe operations with lock-based synchronization
+- Configuration-driven server management from YAML
 """
 
-from flask import Flask, request, Response, jsonify
+from flask import Flask, Response, jsonify
 import requests
 import threading
 import time
 import logging
+import yaml
+import signal
+import sys
+import os
+from collections import deque
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION MANAGEMENT
 # ============================================================================
 
+def load_config(config_file='config.yaml'):
+    """
+    Load and validate configuration from YAML file.
+    
+    Returns:
+        dict: Configuration dictionary with servers, health_check, and load_balancer settings
+        
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        yaml.YAMLError: If config file is invalid YAML
+        ValueError: If required configuration is missing
+    """
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+    
+    try:
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML configuration: {e}")
+    
+    # Validate required top-level sections
+    if not config.get('servers'):
+        raise ValueError("Configuration must contain 'servers' list")
+    if not config.get('health_check'):
+        raise ValueError("Configuration must contain 'health_check' settings")
+    if not config.get('load_balancer'):
+        raise ValueError("Configuration must contain 'load_balancer' settings")
+
+    # Validate required health-check settings
+    health_check = config['health_check']
+    if 'interval_seconds' not in health_check or 'timeout_seconds' not in health_check:
+        raise ValueError("health_check must include 'interval_seconds' and 'timeout_seconds'")
+
+    # Validate required balancer settings
+    load_balancer = config['load_balancer']
+    if 'port' not in load_balancer or 'algorithm' not in load_balancer:
+        raise ValueError("load_balancer must include 'port' and 'algorithm'")
+    
+    return config
+
+# Load configuration at startup
+try:
+    CONFIG = load_config()
+except (FileNotFoundError, ValueError) as e:
+    print(f"Configuration Error: {e}", file=sys.stderr)
+    sys.exit(1)
+
+# Initialize servers from config
 SERVERS = [
-    {"url": "http://127.0.0.1:5001", "active_connections": 0, "healthy": True},
-    {"url": "http://127.0.0.1:5002", "active_connections": 0, "healthy": True},
-    {"url": "http://127.0.0.1:5003", "active_connections": 0, "healthy": True}
+    {
+        "url": server['url'],
+        "name": server.get('name', f"worker-{i}"),
+        "active_connections": 0,
+        "total_handled": 0,
+        "healthy": True,
+        "weight": server.get('weight', 1)
+    }
+    for i, server in enumerate(CONFIG['servers'], 1)
 ]
 
 METRICS = {
@@ -29,17 +91,25 @@ METRICS = {
     'total_requests': 0,
     'successful_requests': 0,
     'failed_requests': 0,
-    'response_times': [],
+    'queued_requests': 0,
+    'response_times': deque(maxlen=1000),  # Keep last 1000 for memory efficiency
     'requests_by_node': {},
     'health_check_failures': {}
 }
+
+# Thread synchronization locks for thread-safe access to shared state
+METRICS_LOCK = threading.Lock()
+SERVERS_LOCK = threading.Lock()
 
 # ============================================================================
 # LOGGING SETUP
 # ============================================================================
 
+# Create logs directory if it doesn't exist
+os.makedirs('logs', exist_ok=True)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=CONFIG['load_balancer'].get('log_level', 'INFO'),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/load_balancer.log'),
@@ -50,6 +120,21 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Graceful shutdown handler
+shutdown_event = threading.Event()
+
+def signal_handler(sig, frame):
+    """Handle shutdown signals gracefully"""
+    logger.info("Received shutdown signal. Gracefully shutting down...")
+    shutdown_event.set()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+try:
+    signal.signal(signal.SIGTERM, signal_handler)
+except (AttributeError, OSError):
+    pass  # SIGTERM not available on Windows
+
 # ============================================================================
 # HEALTH MONITORING
 # ============================================================================
@@ -57,35 +142,77 @@ app = Flask(__name__)
 def monitor_nodes():
     """
     Background service that continuously monitors backend node health.
-    Checks every 5 seconds with 2-second timeout for quick failure detection.
-    """
-    logger.info("Health monitor started")
+    Implements heartbeat-based failure detection as per project proposal.
     
-    while True:
-        for server in SERVERS:
+    Features:
+    - Non-blocking health checks every N seconds (configurable)
+    - Automatic detection and recovery of failed nodes
+    - Thread-safe metrics tracking
+    """
+    logger.info(f"Health monitor started (interval: {CONFIG['health_check']['interval_seconds']}s)")
+    
+    while not shutdown_event.is_set():
+        # Snapshot static fields so network I/O happens outside the registry lock.
+        with SERVERS_LOCK:
+            server_snapshots = [
+                (index, server['name'], server['url'])
+                for index, server in enumerate(SERVERS)
+            ]
+
+        for index, name, url in server_snapshots:
+            healthy = False
+            error_type = None
+
             try:
-                response = requests.get(f"{server['url']}/health", timeout=2)
-                was_healthy = server['healthy']
-                server['healthy'] = (response.status_code == 200)
-                
-                # Log status changes
-                if was_healthy and not server['healthy']:
-                    logger.warning(f"Node {server['url']} is now UNHEALTHY")
-                elif not was_healthy and server['healthy']:
-                    logger.info(f"Node {server['url']} recovered - now HEALTHY")
-                    
-            except (requests.ConnectionError, requests.Timeout):
-                if server['healthy']:
-                    logger.warning(f"Node {server['url']} failed health check")
-                server['healthy'] = False
-                METRICS['health_check_failures'][server['url']] = \
-                    METRICS['health_check_failures'].get(server['url'], 0) + 1
+                response = requests.get(
+                    f"{url}/health",
+                    timeout=CONFIG['health_check']['timeout_seconds']
+                )
+                healthy = (response.status_code == 200)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                error_type = type(e).__name__
+
+            with SERVERS_LOCK:
+                was_healthy = SERVERS[index]['healthy']
+                SERVERS[index]['healthy'] = healthy
+
+            if was_healthy and not healthy:
+                reason = f": {error_type}" if error_type else ""
+                logger.warning(f"Node {name} ({url}) is now UNHEALTHY{reason}")
+                with METRICS_LOCK:
+                    METRICS['health_check_failures'][url] = \
+                        METRICS['health_check_failures'].get(url, 0) + 1
+            elif not was_healthy and healthy:
+                logger.info(f"Node {name} ({url}) recovered - now HEALTHY")
         
-        time.sleep(5)
+        time.sleep(CONFIG['health_check']['interval_seconds'])
 
 # ============================================================================
 # LOAD BALANCING
 # ============================================================================
+
+def select_least_connections_node():
+    """
+    Implements the Least Connections load balancing algorithm.
+    
+    Returns:
+        dict or None: The server with the least active connections among healthy nodes,
+                      or None if no healthy nodes are available
+                      
+    Algorithm: Selects the backend node with the minimum number of active connections,
+               considering node weights. This ensures optimal distribution of load
+               especially for workloads with variable processing times.
+    """
+    with SERVERS_LOCK:
+        healthy_nodes = [s for s in SERVERS if s['healthy']]
+        
+        if not healthy_nodes:
+            return None
+        
+        # Select node with least active connections (weighted)
+        # Lower weight multiplied by higher connections prioritizes higher capacity nodes
+        target = min(healthy_nodes, key=lambda s: s['active_connections'] / s.get('weight', 1))
+        return target
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
@@ -93,43 +220,82 @@ def distribute_traffic(path):
     """
     Routes incoming requests using Least Connections algorithm.
     Automatically excludes unhealthy nodes for zero-downtime fault tolerance.
+    
+    Process:
+    1. Select healthy node with least connections
+    2. Increment active connections counter
+    3. Proxy request to selected node
+    4. Track metrics (response time, success/failure)
+    5. Decrement active connections counter
+    
+    Returns:
+        Response: Proxied response from backend or error message
     """
     start_time = time.time()
-    METRICS['total_requests'] += 1
     
-    # Filter for healthy nodes only
-    healthy_nodes = [s for s in SERVERS if s['healthy']]
+    with METRICS_LOCK:
+        METRICS['total_requests'] += 1
     
-    if not healthy_nodes:
-        METRICS['failed_requests'] += 1
-        logger.error("All backend nodes unavailable!")
-        return "Service Temporarily Unavailable - All nodes down", 503
+    # Select target node using Least Connections algorithm
+    target = select_least_connections_node()
     
-    # Select node with least active connections
-    target = min(healthy_nodes, key=lambda s: s['active_connections'])
-    target['active_connections'] += 1
+    if not target:
+        with METRICS_LOCK:
+            METRICS['failed_requests'] += 1
+            METRICS['queued_requests'] += 1
+        
+        logger.warning("All backend nodes unavailable!")
+        return "Service Temporarily Unavailable - All nodes down.", 503
+    
+    # Increment active connections in thread-safe manner
+    with SERVERS_LOCK:
+        target['active_connections'] += 1
     
     try:
         # Proxy request to selected backend
         response = requests.get(f"{target['url']}/{path}", timeout=5)
         
-        # Track metrics
+        # Track metrics atomically
         response_time = time.time() - start_time
-        METRICS['response_times'].append(response_time)
-        METRICS['successful_requests'] += 1
-        METRICS['requests_by_node'][target['url']] = \
-            METRICS['requests_by_node'].get(target['url'], 0) + 1
+        with METRICS_LOCK:
+            METRICS['response_times'].append(response_time)
+            METRICS['successful_requests'] += 1
+            METRICS['requests_by_node'][target['url']] = \
+                METRICS['requests_by_node'].get(target['url'], 0) + 1
+
+        with SERVERS_LOCK:
+            target['total_handled'] += 1
         
-        logger.info(f"Request routed to {target['url']} ({response_time*1000:.1f}ms)")
-        return Response(response.content, status=response.status_code)
+        logger.debug(f"Request routed to {target['name']} ({response_time*1000:.1f}ms)")
+        return Response(response.content, status=response.status_code, 
+                       content_type=response.headers.get('content-type', 'text/plain'))
+        
+    except requests.Timeout:
+        with METRICS_LOCK:
+            METRICS['failed_requests'] += 1
+        logger.error(f"Timeout routing to {target['name']}: Request exceeded 5s limit")
+        return "Gateway Timeout - Backend node did not respond in time", 504
+        
+    except requests.ConnectionError as e:
+        with METRICS_LOCK:
+            METRICS['failed_requests'] += 1
+        logger.error(f"Connection error routing to {target['name']}: {e}")
+        # Mark node as unhealthy if connection fails
+        with SERVERS_LOCK:
+            target['healthy'] = False
+        return "Bad Gateway - Backend node unreachable", 502
         
     except Exception as e:
-        METRICS['failed_requests'] += 1
-        logger.error(f"Error routing to {target['url']}: {e}")
-        return f"Routing Error: {str(e)}", 500
+        with METRICS_LOCK:
+            METRICS['failed_requests'] += 1
+        logger.error(f"Unexpected error routing to {target['name']}: {e}")
+        return f"Internal Server Error: {type(e).__name__}", 500
         
     finally:
-        target['active_connections'] -= 1
+        # Always decrement active connections
+        with SERVERS_LOCK:
+            if target['active_connections'] > 0:
+                target['active_connections'] -= 1
 
 # ============================================================================
 # MONITORING ENDPOINTS
@@ -137,55 +303,91 @@ def distribute_traffic(path):
 
 @app.route('/metrics')
 def get_metrics():
-    """JSON API endpoint for programmatic access to metrics"""
-    uptime = time.time() - METRICS['start_time']
-    avg_response = sum(METRICS['response_times']) / len(METRICS['response_times']) \
-                   if METRICS['response_times'] else 0
+    """
+    JSON API endpoint for programmatic access to metrics.
     
-    return jsonify({
-        "uptime_seconds": round(uptime, 1),
-        "total_requests": METRICS['total_requests'],
-        "successful_requests": METRICS['successful_requests'],
-        "failed_requests": METRICS['failed_requests'],
-        "success_rate": f"{(METRICS['successful_requests']/METRICS['total_requests']*100) if METRICS['total_requests'] > 0 else 100:.2f}%",
-        "average_response_time_ms": round(avg_response * 1000, 2),
-        "requests_per_second": round(METRICS['total_requests'] / uptime if uptime > 0 else 0, 2),
-        "nodes": [
+    Returns:
+        JSON object containing:
+        - System uptime and throughput metrics
+        - Request success/failure statistics
+        - Per-node performance and health data
+    """
+    with METRICS_LOCK:
+        uptime = time.time() - METRICS['start_time']
+        response_times = list(METRICS['response_times'])
+        avg_response = sum(response_times) / len(response_times) if response_times else 0
+        total_req = METRICS['total_requests']
+        successful = METRICS['successful_requests']
+        failed = METRICS['failed_requests']
+        queued = METRICS['queued_requests']
+        requests_by_node = dict(METRICS['requests_by_node'])
+        health_check_failures = dict(METRICS['health_check_failures'])
+    
+    with SERVERS_LOCK:
+        nodes_data = [
             {
+                "name": s['name'],
                 "url": s['url'],
                 "healthy": s['healthy'],
                 "active_connections": s['active_connections'],
-                "total_requests": METRICS['requests_by_node'].get(s['url'], 0),
-                "health_failures": METRICS['health_check_failures'].get(s['url'], 0)
+                "total_requests": requests_by_node.get(s['url'], 0),
+                "health_failures": health_check_failures.get(s['url'], 0),
+                "weight": s.get('weight', 1)
             }
             for s in SERVERS
         ]
+    
+    return jsonify({
+        "uptime_seconds": round(uptime, 1),
+        "total_requests": total_req,
+        "successful_requests": successful,
+        "failed_requests": failed,
+        "queued_requests": queued,
+        "success_rate": f"{(successful/total_req*100) if total_req > 0 else 100:.2f}%",
+        "average_response_time_ms": round(avg_response * 1000, 2),
+        "requests_per_second": round(total_req / uptime if uptime > 0 else 0, 2),
+        "algorithm": "Least Connections",
+        "nodes": nodes_data
     })
 
 @app.route('/status')
 def status_dashboard():
-    """Beautiful HTML dashboard for real-time system monitoring"""
-    uptime = time.time() - METRICS['start_time']
-    avg_response = sum(METRICS['response_times']) / len(METRICS['response_times']) \
-                   if METRICS['response_times'] else 0
-    success_rate = (METRICS['successful_requests']/METRICS['total_requests']*100) \
-                   if METRICS['total_requests'] > 0 else 100
+    """
+    Beautiful HTML dashboard for real-time system monitoring.
     
-    # Build worker table rows
+    Displays:
+    - System uptime and request metrics
+    - Success rate and average response time
+    - Per-node status, connections, and health history
+    """
+    with METRICS_LOCK:
+        uptime = time.time() - METRICS['start_time']
+        response_times = list(METRICS['response_times'])
+        avg_response = sum(response_times) / len(response_times) if response_times else 0
+        success_rate = (METRICS['successful_requests']/METRICS['total_requests']*100) \
+                       if METRICS['total_requests'] > 0 else 100
+        total_req = METRICS['total_requests']
+        requests_by_node = dict(METRICS['requests_by_node'])
+        health_check_failures = dict(METRICS['health_check_failures'])
+    
+    # Build worker table rows with enhanced information
     rows = ""
-    for server in SERVERS:
-        status_class = "healthy" if server['healthy'] else "unhealthy"
-        status_icon = "✅" if server['healthy'] else "❌"
-        total_reqs = METRICS['requests_by_node'].get(server['url'], 0)
-        failures = METRICS['health_check_failures'].get(server['url'], 0)
-        
-        rows += f"""
+    with SERVERS_LOCK:
+        for server in SERVERS:
+            status_class = "healthy" if server['healthy'] else "unhealthy"
+            status_icon = "✅" if server['healthy'] else "❌"
+            total_reqs = requests_by_node.get(server['url'], 0)
+            failures = health_check_failures.get(server['url'], 0)
+            
+            rows += f"""
             <tr class="worker-row {status_class}">
-                <td><span class="status-badge {status_class}">{status_icon} {server['url']}</span></td>
+                <td><span class="status-badge {status_class}">{status_icon} {server['name']}</span></td>
+                <td><code>{server['url']}</code></td>
                 <td><strong>{'HEALTHY' if server['healthy'] else 'DOWN'}</strong></td>
                 <td><span class="metric-badge">{server['active_connections']}</span></td>
                 <td><span class="metric-badge">{total_reqs}</span></td>
                 <td><span class="metric-badge">{failures}</span></td>
+                <td><span class="metric-badge">{server.get('weight', 1)}</span></td>
             </tr>
         """
     
@@ -353,11 +555,19 @@ def status_dashboard():
             border-bottom: 1px solid #e2e8f0;
         }}
         
+        code {{
+            background: #f1f5f9;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            color: #475569;
+        }}
+        
         .status-badge {{
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            font-family: 'Courier New', monospace;
             font-weight: 600;
         }}
         
@@ -371,10 +581,11 @@ def status_dashboard():
         
         .metric-badge {{
             background: #f1f5f9;
-            padding: 4px 12px;
+            padding: 6px 12px;
             border-radius: 6px;
             font-weight: 600;
             color: #475569;
+            display: inline-block;
         }}
         
         .footer {{
@@ -402,6 +613,15 @@ def status_dashboard():
             0%, 100% {{ opacity: 1; }}
             50% {{ opacity: 0.5; }}
         }}
+        
+        .info-box {{
+            background: rgba(255, 255, 255, 0.1);
+            border-left: 4px solid #10b981;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            color: white;
+        }}
     </style>
 </head>
 <body>
@@ -415,13 +635,17 @@ def status_dashboard():
             </div>
         </div>
         
+        <div class="info-box">
+            <strong>Algorithm:</strong> Least Connections | <strong>Health Interval:</strong> {CONFIG['health_check']['interval_seconds']}s | <strong>Timeout:</strong> {CONFIG['health_check']['timeout_seconds']}s
+        </div>
+        
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-value">{int(uptime)}s</div>
                 <div class="metric-label">System Uptime</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value">{METRICS['total_requests']}</div>
+                <div class="metric-value">{total_req}</div>
                 <div class="metric-label">Total Requests</div>
             </div>
             <div class="metric-card">
@@ -432,20 +656,26 @@ def status_dashboard():
                 <div class="metric-value">{success_rate:.1f}%</div>
                 <div class="metric-label">Success Rate</div>
             </div>
+            <div class="metric-card">
+                <div class="metric-value">{len([s for s in SERVERS if s['healthy']])}/{len(SERVERS)}</div>
+                <div class="metric-label">Healthy Nodes</div>
+            </div>
         </div>
         
         <div class="workers-section">
             <h2 class="section-title">
-                <span>⚡</span> Backend Worker Nodes
+                <span>⚡</span> Backend Worker Nodes Status
             </h2>
             <table>
                 <thead>
                     <tr>
-                        <th>Worker URL</th>
+                        <th>Node Name</th>
+                        <th>URL</th>
                         <th>Status</th>
-                        <th>Active Connections</th>
+                        <th>Active Conn.</th>
                         <th>Total Requests</th>
                         <th>Health Failures</th>
+                        <th>Weight</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -455,8 +685,8 @@ def status_dashboard():
         </div>
         
         <div class="footer">
-            <p>Algorithm: Least Connections | Health Checks: Every 5s | <a href="/metrics">JSON API</a></p>
-            <p style="margin-top: 10px; opacity: 0.8;">TCSS 558 - Applied Distributed Computing | Aayush Modi</p>
+            <p><a href="/metrics">📊 JSON Metrics API</a></p>
+            <p style="margin-top: 10px; opacity: 0.8;">TCSS 558 - Applied Distributed Computing | Dynamic Load Balancer v2.0</p>
         </div>
     </div>
 </body>
@@ -469,20 +699,34 @@ def status_dashboard():
 # ============================================================================
 
 if __name__ == "__main__":
-    # Start health monitor in background
-    logger.info("Starting health monitor...")
-    threading.Thread(target=monitor_nodes, daemon=True).start()
-    
-    # Display startup banner
-    print("\n" + "="*70)
-    print("   🚀 INTELLIGENT LOAD BALANCER - READY")
-    print("="*70)
-    print(f"   Backend Nodes: {len(SERVERS)}")
-    print(f"   Algorithm: Least Connections")
-    print(f"   Health Checks: Every 5 seconds")
-    print(f"   Metrics API: http://127.0.0.1:8000/metrics")
-    print(f"   Dashboard: http://127.0.0.1:8000/status")
-    print("="*70 + "\n")
-    
-    logger.info("Load Balancer started on port 8000")
-    app.run(port=8000)
+    try:
+        # Start health monitor in background
+        logger.info("Starting health monitor...")
+        monitor_thread = threading.Thread(target=monitor_nodes, daemon=True)
+        monitor_thread.start()
+        
+        # Display startup banner with configuration info
+        print("\n" + "="*80)
+        print("   🚀 INTELLIGENT LOAD BALANCER - STARTING")
+        print("="*80)
+        print(f"   Backend Nodes: {len(SERVERS)}")
+        for server in SERVERS:
+            print(f"     - {server['name']}: {server['url']} (weight: {server.get('weight', 1)})")
+        print(f"\n   Algorithm: {CONFIG['load_balancer']['algorithm']}")
+        print(f"   Health Check Interval: {CONFIG['health_check']['interval_seconds']}s")
+        print(f"   Health Check Timeout: {CONFIG['health_check']['timeout_seconds']}s")
+        print(f"   Log Level: {CONFIG['load_balancer']['log_level']}")
+        print(f"\n   📊 Dashboard: http://127.0.0.1:{CONFIG['load_balancer']['port']}/status")
+        print(f"   📈 Metrics API: http://127.0.0.1:{CONFIG['load_balancer']['port']}/metrics")
+        print("="*80 + "\n")
+        
+        logger.info(f"Load Balancer started on port {CONFIG['load_balancer']['port']}")
+        app.run(port=CONFIG['load_balancer']['port'], debug=False, threaded=True)
+        
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        logger.info("Load Balancer shutdown complete")

@@ -1,241 +1,268 @@
-# Distributed Load Balancer
+# Dynamic Distributed Load Balancer
 
-A production-ready distributed load balancer implementing the Least Connections algorithm with automated health monitoring and zero-downtime fault tolerance.
+**Course:** TCSS 558 — Applied Distributed Computing  
+**Term:** Winter 2026  
+**Institution:** University of Washington Tacoma  
+**Author:** Aayush Kiratbhai Modi (`aayush18@uw.edu`)
 
-## Features
+---
 
-- **Intelligent Load Balancing** - Least Connections algorithm for optimal traffic distribution
-- **Zero-Downtime Fault Tolerance** - Automatic failure detection and recovery within 5 seconds
-- **Real-Time Monitoring** - Beautiful web dashboard with live metrics
-- **Comprehensive Testing** - Stress testing, fault injection, and algorithm comparison
-- **Professional Logging** - Structured logging to both file and console
-- **Horizontal Scalability** - Easy worker addition via configuration
+## Project Overview
 
-## Quick Start
+This project implements a self-healing distributed load balancer in Python
+using the Master-Worker (SPMD) architecture. The system routes client HTTP
+requests across a pool of stateless backend workers using the **Least
+Connections** algorithm, which selects the healthy worker with the fewest
+active connections weighted by capacity. A background **heartbeat monitor**
+daemon thread detects worker failures within 5 seconds and excludes them from
+routing, enabling zero-downtime behavior during live worker terminations.
 
-### Installation
+### Key Features
+
+- **Least Connections routing** — adaptive, weighted selection based on live
+  in-flight connection counts (`active_connections / weight`)
+- **Heartbeat-based health monitoring** — asynchronous daemon thread pings
+  workers every 5 s with a 2 s timeout
+- **Reactive + proactive fault handling** — connection errors immediately mark
+  a node unhealthy; the heartbeat confirms and detects silent failures
+- **Thread-safe shared state** — `threading.Lock` protects server registry and
+  metrics counters; `try-finally` guarantees counter rollback
+- **Observable runtime state** — HTML dashboard (`/status`) and JSON API
+  (`/metrics`)
+- **Configuration-driven** — YAML file controls worker membership, weights,
+  heartbeat parameters, and balancer port with zero code changes
+
+### Distributed Systems Concepts Demonstrated
+
+| Concept | Implementation |
+|---|---|
+| SPMD Paradigm | Master-Worker architecture from a single codebase |
+| Load Balancing | Weighted Least Connections algorithm |
+| Failure Detection | Pull-based heartbeat protocol |
+| Latency Hiding | Daemon thread decouples monitoring from request handling |
+| Mutual Exclusion | `threading.Lock` for shared mutable state |
+| Thread Safety | `try-finally` pattern for counter correctness |
+| Data Decomposition | YAML config for horizontal scaling |
+
+---
+
+## Repository Structure
+
+```
+Dynamic-Load-Balancer/
+├── app/
+│   ├── __init__.py              # Package metadata
+│   ├── balancer.py              # Master: LC router, health monitor, dashboard
+│   └── worker.py                # Worker: request handler, /health endpoint
+├── tests/
+│   ├── stress_test.py           # Multi-threaded throughput/latency benchmark
+│   ├── algorithm_comparison.py  # RR vs LC simulation (seeded)
+│   ├── fault_injection.py       # Manual fault-injection probe
+│   ├── evaluation_multirun.py   # Repeated-run stress + algo aggregation
+│   ├── extreme_evaluation.py    # Hidden-workload LC evaluation
+│   └── fault_multirun.py        # Automated multi-trial fault injection
+├── logs/                        # Runtime logs (gitignored, auto-created)
+├── config.yaml                  # System configuration
+├── requirements.txt             # Python dependencies
+└── README.md
+```
+
+---
+
+## Prerequisites
+
+- **Python 3.10+** (tested with Python 3.12)
+- **pip** (comes with Python)
+- Terminal access (PowerShell on Windows, or bash/zsh on macOS/Linux)
+
+---
+
+## Setup
+
+### 1. Clone the repository
 
 ```bash
-# Clone repository
-git clone <your-repo-url>
-cd distributed_lb
+git clone https://github.com/Aayush1259/Dynamic-Load-Balancer.git
+cd Dynamic-Load-Balancer
+```
 
-# Install dependencies
+### 2. Create and activate a virtual environment
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Running the System
+This installs: `flask`, `requests`, `pyyaml`.
 
-**Start Workers (3 separate terminals):**
+---
+
+## How to Run
+
+You need **4 separate terminals**, all in the project root with the virtual
+environment activated.
+
+### Step 1 — Start Workers (3 terminals)
+
 ```bash
+# Terminal 1
 python app/worker.py 5001
+
+# Terminal 2
 python app/worker.py 5002
+
+# Terminal 3
 python app/worker.py 5003
 ```
 
-**Start Load Balancer:**
+### Step 2 — Start the Load Balancer (1 terminal)
+
 ```bash
+# Terminal 4
 python app/balancer.py
 ```
 
-### Access Points
+### Step 3 — Verify the system
 
-- **Load Balancer:** http://127.0.0.1:8000
-- **Dashboard:** http://127.0.0.1:8000/status
-- **Metrics API:** http://127.0.0.1:8000/metrics
+Open these URLs in a browser:
 
-## Project Structure
+| URL | Purpose |
+|---|---|
+| `http://127.0.0.1:8000/` | Send a test request (should show which worker handled it) |
+| `http://127.0.0.1:8000/status` | Live HTML dashboard with worker health and metrics |
+| `http://127.0.0.1:8000/metrics` | JSON API with throughput, latency, and per-node stats |
 
-```
-distributed_lb/
-├── app/
-│   ├── balancer.py          # Load balancer with Least Connections algorithm
-│   └── worker.py            # Backend worker nodes
-├── tests/
-│   ├── stress_test.py       # Performance testing (100-1000 concurrent requests)
-│   ├── fault_injection.py   # Automated fault tolerance validation
-│   └── algorithm_comparison.py  # LC vs RR comparison
-├── config.yaml              # System configuration
-├── requirements.txt         # Python dependencies
-├── .gitignore              # Git exclusions
-└── README.md               # This file
-```
-
-## Testing
-
-### Stress Test
-```bash
-python tests/stress_test.py
-```
-Tests performance under various load levels (100-1000 requests).
-
-### Fault Injection
-```bash
-python tests/fault_injection.py
-```
-Verifies zero-downtime during node failures. **Manually kill a worker when prompted.**
-
-### Algorithm Comparison
-```bash
-python tests/algorithm_comparison.py
-```
-Compares Least Connections vs Round Robin with statistical analysis.
-
-## Architecture
-
-```
-                        ┌─────────────────────┐
-                        │   Client Requests   │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-                   ┌────────────────────────────────┐
-                   │   Load Balancer (Port 8000)    │
-                   │  • Least Connections Algorithm │
-                   │  • Health Monitoring (5s)      │
-                   │  • Metrics Tracking            │
-                   └─────────┬──────────────────────┘
-                             │
-                ┌────────────┼────────────┐
-                ▼            ▼            ▼
-         ┌──────────┐ ┌──────────┐ ┌──────────┐
-         │ Worker 1 │ │ Worker 2 │ │ Worker 3 │
-         │ Port 5001│ │ Port 5002│ │ Port 5003│
-         └──────────┘ └──────────┘ └──────────┘
-```
-
-### Request Flow
-
-1. Client sends request to load balancer (port 8000)
-2. Balancer filters for healthy workers
-3. Selects worker with fewest active connections
-4. Proxies request to selected worker
-5. Worker processes and returns response
-6. Balancer forwards response to client
-
-### Health Monitoring
-
-- **Pull-based heartbeats** every 5 seconds
-- **2-second timeout** for quick failure detection
-- Automatic node exclusion when unhealthy
-- Automatic re-inclusion upon recovery
+---
 
 ## Configuration
 
-Edit `config.yaml` to add/remove workers:
+All runtime parameters are in `config.yaml`:
 
 ```yaml
 servers:
   - url: http://127.0.0.1:5001
     name: worker-1
     weight: 1
-  # Add more workers here
+  - url: http://127.0.0.1:5002
+    name: worker-2
+    weight: 1
+  - url: http://127.0.0.1:5003
+    name: worker-3
+    weight: 1
+health_check:
+  interval_seconds: 5
+  timeout_seconds: 2
+load_balancer:
+  port: 8000
+  algorithm: least_connections
+  log_level: INFO
 ```
 
-## Metrics & Monitoring
+- **Add a worker:** add a new `url` entry under `servers` and start the
+  process on that port
+- **Change weights:** set `weight` per server for capacity-proportional routing
+- **Tune heartbeat:** adjust `interval_seconds` and `timeout_seconds`
 
-### Web Dashboard
-Visit http://127.0.0.1:8000/status for real-time monitoring with:
-- System uptime
-- Total requests and success rate
-- Average response time
-- Per-worker status and statistics
+---
 
-### JSON API
-GET http://127.0.0.1:8000/metrics for programmatic access to:
-- Performance metrics
-- Node health status
-- Request distribution data
+## Running the Evaluation Tests
 
-## Technical Details
+All tests require the core system (3 workers + balancer) to be running first.
 
-### Algorithm: Least Connections
+### A. Stress Test — throughput and latency under load
 
-**Why Least Connections?**
-- Adapts to variable request processing times
-- Better load distribution than Round Robin
-- Industry-standard (AWS ELB, Google Cloud LB)
+```bash
+python tests/stress_test.py --requests 500 --concurrency 50
+```
 
-**How it works:**
-1. Track active connections per worker
-2. Increment counter when routing
-3. Decrement in `finally` block (guarantees accuracy)
-4. Select worker with minimum count
+Sends 500 concurrent requests and reports success rate, throughput (req/s),
+mean latency, and P95 latency.
 
-### Fault Tolerance
+### B. Algorithm Comparison — RR vs LC simulation
 
-**Zero-Downtime Guarantee:**
-- Health monitor marks failed nodes as unhealthy
-- Routing algorithm excludes unhealthy nodes
-- All requests succeed unless ALL nodes fail
-- Tested and verified via `fault_injection.py`
+```bash
+python tests/algorithm_comparison.py --requests 100 --seed 42
+```
 
-## Performance
+Simulates Round-Robin and Least Connections on 3 servers with randomized
+connection releases. Reports per-server assignment counts and variance.
 
-Tested with stress_test.py:
+### C. Fault Injection — zero-downtime validation
 
-| Load Level | Requests | Concurrent | Success Rate | Avg Response |
-|------------|----------|------------|--------------|--------------|
-| Light      | 100      | 10         | 100%         | ~3ms         |
-| Medium     | 500      | 50         | 100%         | ~5ms         |
-| Heavy      | 1000     | 100        | 100%         | ~8ms         |
+```bash
+python tests/fault_injection.py --interval 0.5 --timeout 2.0
+```
+
+Continuously probes the balancer. While running, **kill one worker** (e.g.,
+Ctrl+C on the Worker-5002 terminal) and observe that requests continue
+succeeding through the remaining healthy workers.
+
+### D. Multi-Run Aggregate Evaluation
+
+```bash
+python tests/evaluation_multirun.py --repeats 3 --algo-runs 20
+```
+
+Runs stress tests at 3 operating points (200/20, 500/50, 1000/100) with 3
+repeats each, plus 20 seeded algorithm-comparison runs. Outputs mean ± std
+tables for aggregate analysis.
+
+### E. Extreme Hidden-Workload Evaluation (LC only)
+
+```bash
+python tests/extreme_evaluation.py --repeats 3 --timeout 3.0 --seed 558
+```
+
+Tests LC under 5 hidden-cost scenarios (uniform, bimodal, heavy-tail, bursty)
+where per-request processing cost is unknown to the balancer at routing time.
+
+### F. Automated Fault Multi-Run
+
+```bash
+python tests/fault_multirun.py --trials 3 --requests 120 --kill-at 40
+```
+
+Spawns isolated worker/balancer processes, automatically kills Worker-2 at
+request 40, measures pre/post success rates and recovery time across trials.
+
+---
 
 ## Logs
 
-Logs are written to:
-- `logs/load_balancer.log` - Load balancer activity
-- `logs/worker_5001.log` - Worker 1 activity
-- `logs/worker_5002.log` - Worker 2 activity
-- `logs/worker_5003.log` - Worker 3 activity
+Runtime logs are written to the `logs/` directory (auto-created on startup):
 
-## Dependencies
+| File | Contents |
+|---|---|
+| `logs/load_balancer.log` | Master routing decisions, health state changes |
+| `logs/worker_5001.log` | Worker-1 request and health-check activity |
+| `logs/worker_5002.log` | Worker-2 activity |
+| `logs/worker_5003.log` | Worker-3 activity |
 
-```
-Flask==3.0.0
-requests==2.31.0
-aiohttp==3.9.1
-pyyaml==6.0.1
-```
+---
 
-## Use Cases
+## Troubleshooting
 
-**Development:**
-- Microservices architecture
-- API gateway simulation
-- Distributed systems learning
-
-**Production Concepts:**
-- Horizontal scaling patterns
-- Health monitoring strategies
-- Fault-tolerant design
-
-## Real-World Comparison
-
-| Feature | This Project | AWS ELB | Google Cloud LB |
-|---------|--------------|---------|-----------------|
-| Algorithm | Least Connections | Least Connections | Least Connections |
-| Health Checks | 5s interval | 30s interval | 5-60s interval |
-| Fault Detection | ~5s | ~30s | ~10s |
-| Zero Downtime | ✓ | ✓ | ✓ |
-| Scale | 3-10 nodes | Millions | Millions |
-
-## Limitations
-
-- Load balancer is single point of failure (would need multiple LBs in production)
-- No session persistence (cookies/sticky sessions)
-- HTTP only (no HTTPS)
-- Local network only (no geographic distribution)
-
-## Future Enhancements
-
-- [ ] Weighted load balancing
-- [ ] Session affinity
-- [ ] SSL/TLS support
-- [ ] Multiple load balancer instances with DNS failover
-- [ ] Dynamic worker discovery (service registry)
-- [ ] Circuit breaker pattern
-- [ ] Request rate limiting
-
-## License
-
-MIT License - feel free to use for learning and projects.
+| Issue | Solution |
+|---|---|
+| `Address already in use` | Kill existing processes on those ports, or restart terminals |
+| `ModuleNotFoundError: flask` | Activate the virtual environment and run `pip install -r requirements.txt` |
+| `Configuration Error` | Ensure `config.yaml` exists in the working directory |
+| Workers show `UNHEALTHY` on dashboard | Verify worker processes are running on the correct ports |
+- `ModuleNotFoundError`: activate venv and reinstall requirements.
+- Worker shutdown signal issue on Windows: already handled in code with
+	portable `SIGTERM` fallback.

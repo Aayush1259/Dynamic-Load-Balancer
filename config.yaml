@@ -14,10 +14,10 @@ servers:
     name: worker-3
     weight: 1
   
-  # To demonstrate horizontal scalability, uncomment below:
+  # Optional worker for scale-out demo (uncomment if running worker on 5004)
   # - url: http://127.0.0.1:5004
   #   name: worker-4
-  #   weight: 1
+  #   weight: 2
 
 health_check:
   interval_seconds: 5    # How often to check node health

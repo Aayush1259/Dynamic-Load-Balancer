@@ -1,209 +1,66 @@
-"""
-Stress Testing Suite for Distributed Load Balancer
-
-This script performs comprehensive load testing to evaluate system performance
-under various traffic conditions. Results are used for academic analysis and
-comparison with alternative load balancing algorithms.
-
-Usage: python tests/stress_test.py
-"""
-
-import asyncio
-import aiohttp
+import requests
+import concurrent.futures
 import time
-import json
-from statistics import mean, median, stdev
-from datetime import datetime
+import statistics
+import argparse
 
-async def make_request(session, url, request_id):
-    """Make a single request and measure response time"""
-    start = time.time()
+DEFAULT_URL = "http://127.0.0.1:8000/"
+
+def send_request(url):
     try:
-        async with session.get(url) as response:
-            content = await response.text()
-            elapsed = time.time() - start
-            return {
-                'request_id': request_id,
-                'elapsed': elapsed,
-                'status': response.status,
-                'success': response.status == 200,
-                'content': content[:50]  # First 50 chars
-            }
+        start = time.time()
+        resp = requests.get(url, timeout=5)
+        duration = time.time() - start
+        return (resp.status_code, duration)
     except Exception as e:
-        elapsed = time.time() - start
-        return {
-            'request_id': request_id,
-            'elapsed': elapsed,
-            'status': 0,
-            'success': False,
-            'error': str(e)
-        }
+        return (str(e), 0)
 
-async def stress_test(num_requests, concurrency, test_name):
-    """
-    Run stress test with specified parameters
+def run_stress_test(url=DEFAULT_URL, total_requests=100, concurrency=10):
+    print(f"🚀 STARTING STRESS TEST")
+    print(f"Target: {url}")
+    print(f"Goal: {total_requests} requests with {concurrency} concurrent threads")
+    print("-" * 50)
     
-    Args:
-        num_requests: Total number of requests to send
-        concurrency: Number of concurrent requests
-        test_name: Descriptive name for this test
-    """
-    url = "http://127.0.0.1:8000"
-    results = []
+    successful = 0
+    failed = 0
+    durations = []
     
-    print(f"\n{'='*70}")
-    print(f"  STRESS TEST: {test_name}")
-    print(f"{'='*70}")
-    print(f"Parameters: {num_requests} total requests, {concurrency} concurrent")
-    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*70}\n")
+    start_time = time.time()
     
-    test_start = time.time()
-    
-    async with aiohttp.ClientSession() as session:
-        # Create batches of concurrent requests
-        for batch_start in range(0, num_requests, concurrency):
-            batch_size = min(concurrency, num_requests - batch_start)
-            tasks = [
-                make_request(session, url, batch_start + i)
-                for i in range(batch_size)
-            ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(send_request, url) for _ in range(total_requests)]
+        
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            status, duration = future.result()
+            if status == 200:
+                successful += 1
+                durations.append(duration)
+            else:
+                failed += 1
             
-            batch_results = await asyncio.gather(*tasks)
-            results.extend(batch_results)
-            
-            # Progress indicator
-            progress = (batch_start + batch_size) / num_requests * 100
-            print(f"Progress: {progress:.1f}% ({batch_start + batch_size}/{num_requests})", end='\r')
+            if (i+1) % 50 == 0:
+                print(f"   Progress: {i+1}/{total_requests} completed...")
+                
+    total_time = time.time() - start_time
     
-    test_duration = time.time() - test_start
-    print()  # New line after progress indicator
-    
-    # Calculate statistics
-    successful = [r for r in results if r['success']]
-    failed = [r for r in results if not r['success']]
-    response_times = [r['elapsed'] for r in results]
-    successful_times = [r['elapsed'] for r in successful]
-    
-    print(f"\n{'─'*70}")
-    print("  TEST RESULTS")
-    print(f"{'─'*70}")
-    print(f"Total Requests:          {num_requests}")
-    print(f"Successful:              {len(successful)} ({len(successful)/num_requests*100:.1f}%)")
-    print(f"Failed:                  {len(failed)} ({len(failed)/num_requests*100:.1f}%)")
-    print(f"Total Test Duration:     {test_duration:.2f} seconds")
-    print(f"\n{'─'*70}")
-    print("  RESPONSE TIME STATISTICS")
-    print(f"{'─'*70}")
-    
-    if successful_times:
-        print(f"Average Response Time:   {mean(successful_times)*1000:.2f} ms")
-        print(f"Median Response Time:    {median(successful_times)*1000:.2f} ms")
-        print(f"Std Deviation:           {stdev(successful_times)*1000:.2f} ms" if len(successful_times) > 1 else "Std Deviation:           N/A")
-        print(f"Min Response Time:       {min(successful_times)*1000:.2f} ms")
-        print(f"Max Response Time:       {max(successful_times)*1000:.2f} ms")
-    else:
-        print("No successful requests to analyze")
-    
-    print(f"\n{'─'*70}")
-    print("  THROUGHPUT METRICS")
-    print(f"{'─'*70}")
-    print(f"Requests/Second:         {num_requests/test_duration:.2f}")
-    print(f"Avg Request Duration:    {mean(response_times)*1000:.2f} ms")
-    print(f"{'='*70}\n")
-    
-    # Save results to file
-    result_data = {
-        'test_name': test_name,
-        'timestamp': datetime.now().isoformat(),
-        'parameters': {
-            'total_requests': num_requests,
-            'concurrency': concurrency
-        },
-        'results': {
-            'successful_requests': len(successful),
-            'failed_requests': len(failed),
-            'success_rate': len(successful)/num_requests*100,
-            'total_duration': test_duration,
-            'requests_per_second': num_requests/test_duration
-        },
-        'response_times': {
-            'average_ms': mean(successful_times)*1000 if successful_times else 0,
-            'median_ms': median(successful_times)*1000 if successful_times else 0,
-            'min_ms': min(successful_times)*1000 if successful_times else 0,
-            'max_ms': max(successful_times)*1000 if successful_times else 0,
-            'std_dev_ms': stdev(successful_times)*1000 if len(successful_times) > 1 else 0
-        }
-    }
-    
-    return result_data
+    print("-" * 50)
+    print(f"📊 RESULTS:")
+    print(f"   ✅ Successful: {successful}")
+    print(f"   ❌ Failed:     {failed}")
+    print(f"   ⏱️  Total Time: {total_time:.2f}s")
+    print(f"   🚀 Throughput: {successful/total_time:.1f} req/s")
+    if durations:
+        print(f"   ⚡ Avg Latency: {statistics.mean(durations)*1000:.1f}ms")
+        print(f"   📏 P95 Latency: {statistics.quantiles(durations, n=20)[18]*1000:.1f}ms" if len(durations) >= 20 else "   📏 P95 Latency: N/A (need >= 20 samples)")
+    print("-" * 50)
 
-async def run_all_tests():
-    """Execute comprehensive test suite"""
-    print("\n" + "="*70)
-    print("  DISTRIBUTED LOAD BALANCER - STRESS TEST SUITE")
-    print("="*70)
-    print("  Academic Performance Analysis for TCSS 558")
-    print("="*70)
-    
-    all_results = []
-    
-    # Test 1: Light Load
-    result = await stress_test(100, 10, "Light Load - 100 requests, 10 concurrent")
-    all_results.append(result)
-    
-    await asyncio.sleep(2)  # Cooldown between tests
-    
-    # Test 2: Medium Load
-    result = await stress_test(500, 50, "Medium Load - 500 requests, 50 concurrent")
-    all_results.append(result)
-    
-    await asyncio.sleep(2)
-    
-    # Test 3: Heavy Load
-    result = await stress_test(1000, 100, "Heavy Load - 1000 requests, 100 concurrent")
-    all_results.append(result)
-    
-    await asyncio.sleep(2)
-    
-    # Test 4: Extreme Concurrency
-    result = await stress_test(500, 200, "Extreme Concurrency - 500 requests, 200 concurrent")
-    all_results.append(result)
-    
-    # Save all results
-    with open('tests/test_results.json', 'w') as f:
-        json.dump({
-            'test_suite': 'Distributed Load Balancer Performance Analysis',
-            'course': 'TCSS 558 - Applied Distributed Computing',
-            'execution_time': datetime.now().isoformat(),
-            'tests': all_results
-        }, f, indent=2)
-    
-    print("\n" + "="*70)
-    print("  ALL TESTS COMPLETED")
-    print("="*70)
-    print("Results saved to: tests/test_results.json")
-    print("="*70 + "\n")
-    
-    # Summary table
-    print("\nSUMMARY TABLE FOR REPORT:\n")
-    print(f"{'Test Name':<45} {'Requests/sec':<15} {'Avg Time (ms)':<15} {'Success Rate'}")
-    print("─"*90)
-    for result in all_results:
-        rps = result['results']['requests_per_second']
-        avg_time = result['response_times']['average_ms']
-        success = result['results']['success_rate']
-        name = result['test_name'][:44]
-        print(f"{name:<45} {rps:<15.2f} {avg_time:<15.2f} {success:.1f}%")
-    print()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run load-balancer stress test")
+    parser.add_argument("--url", default=DEFAULT_URL, help="Load balancer URL (default: %(default)s)")
+    parser.add_argument("--requests", type=int, default=500, help="Total requests to send (default: %(default)s)")
+    parser.add_argument("--concurrency", type=int, default=50, help="Concurrent workers (default: %(default)s)")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    print("\nNOTE: Ensure the Load Balancer and all Worker nodes are running before starting tests.\n")
-    
-    try:
-        asyncio.run(run_all_tests())
-    except KeyboardInterrupt:
-        print("\n\nTest suite interrupted by user.")
-    except Exception as e:
-        print(f"\n\nError during testing: {str(e)}")
-        print("Make sure the load balancer is running on http://127.0.0.1:8000")
+    args = parse_args()
+    run_stress_test(url=args.url, total_requests=args.requests, concurrency=args.concurrency)

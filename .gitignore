@@ -1,47 +1,53 @@
-# Python
+# Python cache/bytecode
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Logs
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Local environment
+.env
+.env.local
+
+# Logs and runtime outputs
 logs/
 *.log
+!logs/.gitkeep
 
-# IDE
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+comment.cut
+
+# Editor/IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Test results
-tests/test_results.json
+# Test outputs
 tests/*.json
-
-# Local environment
-.env
-.env.local
