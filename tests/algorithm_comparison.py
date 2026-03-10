@@ -44,11 +44,7 @@ def simulate_algorithm_comparison(total_requests=100, seed=42):
     for s in servers:
         print(f"   - {s}: {lc_load[s]} requests")
     print(f"   > Variance: {statistics.variance(lc_load.values()):.2f}")
-    
-    print("\n🏆 CONCLUSION:")
-    print("   Least Connections adapts dynamically to load.")
-    print("   Round Robin is static and can overwhelm servers.")
-    print(f"   (Seed: {seed})")
+    print(f"\n   Seed: {seed}")
     print("="*60)
 
 if __name__ == "__main__":

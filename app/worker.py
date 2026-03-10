@@ -1,14 +1,4 @@
-"""
-Backend Worker Node - Distributed Load Balancer System
-
-This module implements a backend worker node that:
-- Processes incoming requests from the load balancer
-- Provides a health check endpoint for automated monitoring
-- Logs all activity for debugging and analysis
-
-The worker is designed to be horizontally scalable - multiple instances
-can be started on different ports to form a distributed backend cluster.
-"""
+"""Backend worker node for the distributed load balancer."""
 
 from flask import Flask, jsonify, request
 import sys
@@ -17,13 +7,10 @@ import os
 import signal
 import time
 
-# Get port from command line argument
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 5001
 
-# Create logs directory if it doesn't exist
 os.makedirs('logs', exist_ok=True)
 
-# Configure logging with proper formatting
 logging.basicConfig(
     level=logging.INFO,
     format=f'%(asctime)s - Worker-{PORT} - %(levelname)s - %(message)s',
@@ -37,8 +24,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals gracefully"""
-    logger.info("Received shutdown signal. Shutting down gracefully...")
+    logger.info("Shutting down gracefully...")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -49,17 +35,7 @@ except (AttributeError, OSError):
 
 @app.route('/')
 def process_request():
-    """
-    Handle incoming work requests from the load balancer.
-    
-    This endpoint simulates processing work by returning a response
-    indicating which worker processed the request.
-    
-    Returns:
-        str: Response message with worker port information
-    """
-    # Optional hidden workload control used by evaluation scripts.
-    # The balancer does not inspect this value; workers simulate variable cost.
+    """Handle incoming work requests from the load balancer."""
     work_ms_raw = request.args.get('work_ms')
     if work_ms_raw is not None:
         try:
@@ -74,26 +50,13 @@ def process_request():
 
 @app.route('/health')
 def health_check():
-    """
-    Health check endpoint for load balancer monitoring.
-    
-    This endpoint is called by the load balancer's health monitoring service
-    to determine if this worker node is alive and operational.
-    
-    Returns:
-        JSON: Health status and port information with 200 status code
-    """
+    """Health check endpoint for load balancer monitoring."""
     logger.debug("Health check requested")
     return jsonify({"status": "healthy", "port": PORT}), 200
 
 @app.route('/info')
 def info():
-    """
-    Informational endpoint providing worker metadata.
-    
-    Returns:
-        JSON: Worker information including port, status, and log location
-    """
+    """Worker metadata endpoint."""
     return jsonify({
         "port": PORT,
         "status": "operational",

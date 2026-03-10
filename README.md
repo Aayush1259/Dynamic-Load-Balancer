@@ -34,15 +34,15 @@ routing, enabling zero-downtime behavior during live worker terminations.
 
 ### Distributed Systems Concepts Demonstrated
 
-| Concept | Implementation |
-|---|---|
-| SPMD Paradigm | Master-Worker architecture from a single codebase |
-| Load Balancing | Weighted Least Connections algorithm |
-| Failure Detection | Pull-based heartbeat protocol |
-| Latency Hiding | Daemon thread decouples monitoring from request handling |
-| Mutual Exclusion | `threading.Lock` for shared mutable state |
-| Thread Safety | `try-finally` pattern for counter correctness |
-| Data Decomposition | YAML config for horizontal scaling |
+| Concept            | Implementation                                           |
+| ------------------ | -------------------------------------------------------- |
+| SPMD Paradigm      | Master-Worker architecture from a single codebase        |
+| Load Balancing     | Weighted Least Connections algorithm                     |
+| Failure Detection  | Pull-based heartbeat protocol                            |
+| Latency Hiding     | Daemon thread decouples monitoring from request handling |
+| Mutual Exclusion   | `threading.Lock` for shared mutable state                |
+| Thread Safety      | `try-finally` pattern for counter correctness            |
+| Data Decomposition | YAML config for horizontal scaling                       |
 
 ---
 
@@ -141,11 +141,11 @@ python app/balancer.py
 
 Open these URLs in a browser:
 
-| URL | Purpose |
-|---|---|
-| `http://127.0.0.1:8000/` | Send a test request (should show which worker handled it) |
-| `http://127.0.0.1:8000/status` | Live HTML dashboard with worker health and metrics |
-| `http://127.0.0.1:8000/metrics` | JSON API with throughput, latency, and per-node stats |
+| URL                             | Purpose                                                   |
+| ------------------------------- | --------------------------------------------------------- |
+| `http://127.0.0.1:8000/`        | Send a test request (should show which worker handled it) |
+| `http://127.0.0.1:8000/status`  | Live HTML dashboard with worker health and metrics        |
+| `http://127.0.0.1:8000/metrics` | JSON API with throughput, latency, and per-node stats     |
 
 ---
 
@@ -246,23 +246,21 @@ request 40, measures pre/post success rates and recovery time across trials.
 
 Runtime logs are written to the `logs/` directory (auto-created on startup):
 
-| File | Contents |
-|---|---|
+| File                     | Contents                                       |
+| ------------------------ | ---------------------------------------------- |
 | `logs/load_balancer.log` | Master routing decisions, health state changes |
-| `logs/worker_5001.log` | Worker-1 request and health-check activity |
-| `logs/worker_5002.log` | Worker-2 activity |
-| `logs/worker_5003.log` | Worker-3 activity |
+| `logs/worker_5001.log`   | Worker-1 request and health-check activity     |
+| `logs/worker_5002.log`   | Worker-2 activity                              |
+| `logs/worker_5003.log`   | Worker-3 activity                              |
 
 ---
 
 ## Troubleshooting
 
-| Issue | Solution |
-|---|---|
-| `Address already in use` | Kill existing processes on those ports, or restart terminals |
-| `ModuleNotFoundError: flask` | Activate the virtual environment and run `pip install -r requirements.txt` |
-| `Configuration Error` | Ensure `config.yaml` exists in the working directory |
-| Workers show `UNHEALTHY` on dashboard | Verify worker processes are running on the correct ports |
-- `ModuleNotFoundError`: activate venv and reinstall requirements.
-- Worker shutdown signal issue on Windows: already handled in code with
-	portable `SIGTERM` fallback.
+| Issue                                 | Solution                                                                   |
+| ------------------------------------- | -------------------------------------------------------------------------- |
+| `Address already in use`              | Kill existing processes on those ports, or restart terminals               |
+| `ModuleNotFoundError: flask`          | Activate the virtual environment and run `pip install -r requirements.txt` |
+| `Configuration Error`                 | Ensure `config.yaml` exists in the working directory                       |
+| Workers show `UNHEALTHY` on dashboard | Verify worker processes are running on the correct ports                   |
+

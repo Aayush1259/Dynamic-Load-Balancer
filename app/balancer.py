@@ -1,14 +1,4 @@
-"""
-Dynamic Distributed Load Balancer with Health Monitoring
-
-Features:
-- Least Connections algorithm for intelligent load distribution
-- Automated health monitoring with pull-based heartbeats
-- Real-time metrics tracking and visualization
-- Professional web dashboard for system monitoring
-- Thread-safe operations with lock-based synchronization
-- Configuration-driven server management from YAML
-"""
+"""Dynamic distributed load balancer with health monitoring."""
 
 from flask import Flask, Response, jsonify
 import requests
@@ -21,22 +11,8 @@ import sys
 import os
 from collections import deque
 
-# ============================================================================
-# CONFIGURATION MANAGEMENT
-# ============================================================================
-
 def load_config(config_file='config.yaml'):
-    """
-    Load and validate configuration from YAML file.
-    
-    Returns:
-        dict: Configuration dictionary with servers, health_check, and load_balancer settings
-        
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        yaml.YAMLError: If config file is invalid YAML
-        ValueError: If required configuration is missing
-    """
+    """Load and validate configuration from YAML file."""
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"Configuration file not found: {config_file}")
     
@@ -46,7 +22,6 @@ def load_config(config_file='config.yaml'):
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML configuration: {e}")
     
-    # Validate required top-level sections
     if not config.get('servers'):
         raise ValueError("Configuration must contain 'servers' list")
     if not config.get('health_check'):
@@ -54,26 +29,22 @@ def load_config(config_file='config.yaml'):
     if not config.get('load_balancer'):
         raise ValueError("Configuration must contain 'load_balancer' settings")
 
-    # Validate required health-check settings
     health_check = config['health_check']
     if 'interval_seconds' not in health_check or 'timeout_seconds' not in health_check:
         raise ValueError("health_check must include 'interval_seconds' and 'timeout_seconds'")
 
-    # Validate required balancer settings
     load_balancer = config['load_balancer']
     if 'port' not in load_balancer or 'algorithm' not in load_balancer:
         raise ValueError("load_balancer must include 'port' and 'algorithm'")
     
     return config
 
-# Load configuration at startup
 try:
     CONFIG = load_config()
 except (FileNotFoundError, ValueError) as e:
     print(f"Configuration Error: {e}", file=sys.stderr)
     sys.exit(1)
 
-# Initialize servers from config
 SERVERS = [
     {
         "url": server['url'],
@@ -92,20 +63,14 @@ METRICS = {
     'successful_requests': 0,
     'failed_requests': 0,
     'queued_requests': 0,
-    'response_times': deque(maxlen=1000),  # Keep last 1000 for memory efficiency
+    'response_times': deque(maxlen=1000),
     'requests_by_node': {},
     'health_check_failures': {}
 }
 
-# Thread synchronization locks for thread-safe access to shared state
 METRICS_LOCK = threading.Lock()
 SERVERS_LOCK = threading.Lock()
 
-# ============================================================================
-# LOGGING SETUP
-# ============================================================================
-
-# Create logs directory if it doesn't exist
 os.makedirs('logs', exist_ok=True)
 
 logging.basicConfig(
@@ -120,12 +85,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Graceful shutdown handler
 shutdown_event = threading.Event()
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals gracefully"""
-    logger.info("Received shutdown signal. Gracefully shutting down...")
+    logger.info("Shutting down gracefully...")
     shutdown_event.set()
     sys.exit(0)
 
@@ -133,26 +96,13 @@ signal.signal(signal.SIGINT, signal_handler)
 try:
     signal.signal(signal.SIGTERM, signal_handler)
 except (AttributeError, OSError):
-    pass  # SIGTERM not available on Windows
-
-# ============================================================================
-# HEALTH MONITORING
-# ============================================================================
+    pass
 
 def monitor_nodes():
-    """
-    Background service that continuously monitors backend node health.
-    Implements heartbeat-based failure detection as per project proposal.
-    
-    Features:
-    - Non-blocking health checks every N seconds (configurable)
-    - Automatic detection and recovery of failed nodes
-    - Thread-safe metrics tracking
-    """
+    """Background daemon that checks backend health via heartbeat."""
     logger.info(f"Health monitor started (interval: {CONFIG['health_check']['interval_seconds']}s)")
     
     while not shutdown_event.is_set():
-        # Snapshot static fields so network I/O happens outside the registry lock.
         with SERVERS_LOCK:
             server_snapshots = [
                 (index, server['name'], server['url'])
@@ -187,56 +137,26 @@ def monitor_nodes():
         
         time.sleep(CONFIG['health_check']['interval_seconds'])
 
-# ============================================================================
-# LOAD BALANCING
-# ============================================================================
-
 def select_least_connections_node():
-    """
-    Implements the Least Connections load balancing algorithm.
-    
-    Returns:
-        dict or None: The server with the least active connections among healthy nodes,
-                      or None if no healthy nodes are available
-                      
-    Algorithm: Selects the backend node with the minimum number of active connections,
-               considering node weights. This ensures optimal distribution of load
-               especially for workloads with variable processing times.
-    """
+    """Return the healthy node with the fewest weighted active connections, or None."""
     with SERVERS_LOCK:
         healthy_nodes = [s for s in SERVERS if s['healthy']]
         
         if not healthy_nodes:
             return None
         
-        # Select node with least active connections (weighted)
-        # Lower weight multiplied by higher connections prioritizes higher capacity nodes
         target = min(healthy_nodes, key=lambda s: s['active_connections'] / s.get('weight', 1))
         return target
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def distribute_traffic(path):
-    """
-    Routes incoming requests using Least Connections algorithm.
-    Automatically excludes unhealthy nodes for zero-downtime fault tolerance.
-    
-    Process:
-    1. Select healthy node with least connections
-    2. Increment active connections counter
-    3. Proxy request to selected node
-    4. Track metrics (response time, success/failure)
-    5. Decrement active connections counter
-    
-    Returns:
-        Response: Proxied response from backend or error message
-    """
+    """Route request to the least-loaded healthy backend node."""
     start_time = time.time()
     
     with METRICS_LOCK:
         METRICS['total_requests'] += 1
     
-    # Select target node using Least Connections algorithm
     target = select_least_connections_node()
     
     if not target:
@@ -247,15 +167,11 @@ def distribute_traffic(path):
         logger.warning("All backend nodes unavailable!")
         return "Service Temporarily Unavailable - All nodes down.", 503
     
-    # Increment active connections in thread-safe manner
     with SERVERS_LOCK:
         target['active_connections'] += 1
     
     try:
-        # Proxy request to selected backend
         response = requests.get(f"{target['url']}/{path}", timeout=5)
-        
-        # Track metrics atomically
         response_time = time.time() - start_time
         with METRICS_LOCK:
             METRICS['response_times'].append(response_time)
@@ -280,7 +196,6 @@ def distribute_traffic(path):
         with METRICS_LOCK:
             METRICS['failed_requests'] += 1
         logger.error(f"Connection error routing to {target['name']}: {e}")
-        # Mark node as unhealthy if connection fails
         with SERVERS_LOCK:
             target['healthy'] = False
         return "Bad Gateway - Backend node unreachable", 502
@@ -292,26 +207,13 @@ def distribute_traffic(path):
         return f"Internal Server Error: {type(e).__name__}", 500
         
     finally:
-        # Always decrement active connections
         with SERVERS_LOCK:
             if target['active_connections'] > 0:
                 target['active_connections'] -= 1
 
-# ============================================================================
-# MONITORING ENDPOINTS
-# ============================================================================
-
 @app.route('/metrics')
 def get_metrics():
-    """
-    JSON API endpoint for programmatic access to metrics.
-    
-    Returns:
-        JSON object containing:
-        - System uptime and throughput metrics
-        - Request success/failure statistics
-        - Per-node performance and health data
-    """
+    """Return system and per-node metrics as JSON."""
     with METRICS_LOCK:
         uptime = time.time() - METRICS['start_time']
         response_times = list(METRICS['response_times'])
@@ -352,14 +254,7 @@ def get_metrics():
 
 @app.route('/status')
 def status_dashboard():
-    """
-    Beautiful HTML dashboard for real-time system monitoring.
-    
-    Displays:
-    - System uptime and request metrics
-    - Success rate and average response time
-    - Per-node status, connections, and health history
-    """
+    """Render the live HTML monitoring dashboard."""
     with METRICS_LOCK:
         uptime = time.time() - METRICS['start_time']
         response_times = list(METRICS['response_times'])
@@ -370,7 +265,6 @@ def status_dashboard():
         requests_by_node = dict(METRICS['requests_by_node'])
         health_check_failures = dict(METRICS['health_check_failures'])
     
-    # Build worker table rows with enhanced information
     rows = ""
     with SERVERS_LOCK:
         for server in SERVERS:
@@ -694,18 +588,12 @@ def status_dashboard():
     """
     return html
 
-# ============================================================================
-# MAIN
-# ============================================================================
-
 if __name__ == "__main__":
     try:
-        # Start health monitor in background
         logger.info("Starting health monitor...")
         monitor_thread = threading.Thread(target=monitor_nodes, daemon=True)
         monitor_thread.start()
         
-        # Display startup banner with configuration info
         print("\n" + "="*80)
         print("   🚀 INTELLIGENT LOAD BALANCER - STARTING")
         print("="*80)
