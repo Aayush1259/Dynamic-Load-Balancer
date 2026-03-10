@@ -1,10 +1,4 @@
 # Dynamic Distributed Load Balancer
-
-**Course:** TCSS 558 — Applied Distributed Computing  
-**Term:** Winter 2026  
-**Institution:** University of Washington Tacoma  
-**Author:** Aayush Kiratbhai Modi (`aayush18@uw.edu`)
-
 ---
 
 ## Project Overview
